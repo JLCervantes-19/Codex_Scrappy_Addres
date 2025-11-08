@@ -8,6 +8,9 @@ import os
 import time
 from threading import Thread
 import json
+import zipfile
+import xml.etree.ElementTree as ET
+
 import pandas as pd
 from werkzeug.utils import secure_filename
 
@@ -29,6 +32,179 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 # Estado de consultas
 consultas_en_progreso = {}
 consultas_masivas = {}
+
+TIPOS_DOCUMENTO_VALIDOS = ['CC', 'TI', 'CE', 'PA', 'RC', 'NU', 'AS', 'MS', 'CD', 'CN', 'SC', 'PE', 'PT']
+
+XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+XLSX_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def _columna_a_indice(columna):
+    """Convierte una referencia de columna de Excel (ej. 'AA') a índice basado en cero."""
+    indice = 0
+    for caracter in columna:
+        if not caracter.isalpha():
+            break
+        indice = indice * 26 + (ord(caracter.upper()) - ord('A') + 1)
+    return max(indice - 1, 0)
+
+
+def _texto_shared_string(elemento):
+    """Extrae el texto de un nodo <si> o inlineStr dentro del XML de Excel."""
+    partes = []
+    for nodo in elemento.iter():
+        if nodo.tag.endswith('}t') and nodo.text:
+            partes.append(nodo.text)
+    return ''.join(partes)
+
+
+def leer_excel_xlsx_basico(ruta):
+    """Lee un archivo XLSX sin dependencias externas como openpyxl."""
+    try:
+        with zipfile.ZipFile(ruta) as archivo_zip:
+            nombres = set(archivo_zip.namelist())
+
+            shared_strings = []
+            if 'xl/sharedStrings.xml' in nombres:
+                raiz_shared = ET.fromstring(archivo_zip.read('xl/sharedStrings.xml'))
+                for si in raiz_shared.findall(f'.//{{{XLSX_MAIN_NS}}}si'):
+                    shared_strings.append(_texto_shared_string(si))
+
+            workbook = ET.fromstring(archivo_zip.read('xl/workbook.xml'))
+            hoja = workbook.find(f'.//{{{XLSX_MAIN_NS}}}sheet')
+            if hoja is None:
+                return pd.DataFrame()
+
+            rel_id = hoja.attrib.get(f'{{{XLSX_REL_NS}}}id')
+            destino_hoja = None
+
+            try:
+                rels = ET.fromstring(archivo_zip.read('xl/_rels/workbook.xml.rels'))
+                for rel in rels.findall(f'{{{XLSX_REL_NS}}}Relationship'):
+                    if rel.attrib.get('Id') == rel_id:
+                        destino_hoja = rel.attrib.get('Target')
+                        break
+            except KeyError:
+                pass
+
+            if not destino_hoja:
+                destino_hoja = 'worksheets/sheet1.xml'
+
+            if not destino_hoja.startswith('xl/'):
+                destino_hoja = f'xl/{destino_hoja}'
+
+            hoja_xml = archivo_zip.read(destino_hoja)
+            raiz_hoja = ET.fromstring(hoja_xml)
+
+            datos = []
+            max_columnas = 0
+            for fila in raiz_hoja.findall(f'.//{{{XLSX_MAIN_NS}}}row'):
+                celdas = {}
+                for celda in fila.findall(f'{{{XLSX_MAIN_NS}}}c'):
+                    referencia = celda.attrib.get('r', '')
+                    columna = ''.join(ch for ch in referencia if ch.isalpha())
+                    indice_columna = _columna_a_indice(columna) if columna else 0
+
+                    valor = ''
+                    tipo = celda.attrib.get('t')
+                    if tipo == 's':
+                        indice_shared = celda.find(f'{{{XLSX_MAIN_NS}}}v')
+                        if indice_shared is not None and indice_shared.text:
+                            try:
+                                valor = shared_strings[int(indice_shared.text)]
+                            except (ValueError, IndexError):
+                                valor = ''
+                    elif tipo == 'inlineStr':
+                        inline = celda.find(f'{{{XLSX_MAIN_NS}}}is')
+                        if inline is not None:
+                            valor = _texto_shared_string(inline)
+                    else:
+                        nodo_valor = celda.find(f'{{{XLSX_MAIN_NS}}}v')
+                        if nodo_valor is not None and nodo_valor.text is not None:
+                            valor = nodo_valor.text
+
+                    celdas[indice_columna] = valor
+                    max_columnas = max(max_columnas, indice_columna + 1)
+
+                fila_actual = [''] * max_columnas
+                for indice, valor in celdas.items():
+                    if indice >= len(fila_actual):
+                        fila_actual.extend([''] * (indice + 1 - len(fila_actual)))
+                    fila_actual[indice] = valor
+                datos.append(fila_actual)
+
+            if not datos:
+                return pd.DataFrame()
+
+            encabezados = [col.strip() for col in datos[0]]
+            registros = []
+            for fila in datos[1:]:
+                registro = {}
+                for indice, encabezado in enumerate(encabezados):
+                    if not encabezado:
+                        continue
+                    valor = fila[indice] if indice < len(fila) else ''
+                    registro[encabezado] = valor
+                if registro:
+                    registros.append(registro)
+
+            df = pd.DataFrame(registros)
+            if not df.empty:
+                df = df.replace(r'^\s*$', pd.NA, regex=True)
+            return df
+
+    except (KeyError, zipfile.BadZipFile, ET.ParseError):
+        pass
+
+    return pd.DataFrame()
+
+
+def cargar_excel_como_dataframe(ruta):
+    """Intenta cargar un archivo Excel utilizando pandas y un lector básico como respaldo."""
+    try:
+        return pd.read_excel(ruta)
+    except Exception as error:
+        mensaje = str(error).lower()
+        if ruta.lower().endswith('.xlsx') and 'openpyxl' in mensaje:
+            df = leer_excel_xlsx_basico(ruta)
+            if not df.empty:
+                return df
+        raise
+
+
+def normalizar_numero_documento(valor):
+    """Convierte el número de documento a una cadena solo con dígitos."""
+    if valor is None:
+        return ""
+
+    import numbers
+
+    if isinstance(valor, numbers.Number):
+        try:
+            return str(int(valor))
+        except (ValueError, OverflowError):
+            pass
+
+    texto = str(valor).strip()
+    if not texto:
+        return ""
+
+    if texto.isdigit():
+        return texto
+
+    texto_normalizado = texto.replace(" ", "").replace(",", "")
+    if texto_normalizado.isdigit():
+        return texto_normalizado
+
+    try:
+        numero = float(texto_normalizado)
+        if numero.is_integer():
+            return str(int(numero))
+    except ValueError:
+        pass
+
+    solo_digitos = "".join(ch for ch in texto if ch.isdigit())
+    return solo_digitos
 
 
 def ejecutar_consulta_async(numero_doc, tipo_doc, consulta_id):
@@ -120,12 +296,19 @@ def ejecutar_consulta_async(numero_doc, tipo_doc, consulta_id):
         archivos, datos_json = guardar_resultados(nombre_archivo, contenido_resultado, driver)
         
         # Actualizar estado final
+        enlaces_descarga = {
+            clave: f"/api/descargar/{nombre_archivo}/{clave}"
+            for clave in archivos.keys()
+        }
+
         consultas_en_progreso[consulta_id] = {
             "estado": "completado",
             "progreso": 100,
             "mensaje": "Consulta completada exitosamente",
             "datos": datos_json,
             "archivos": {k: os.path.basename(v) for k, v in archivos.items()},
+            "links_descarga": enlaces_descarga,
+            "nombre_archivo": nombre_archivo,
             "tipo_doc": tipo_doc,
             "numero_doc": numero_doc
         }
@@ -153,7 +336,7 @@ def ejecutar_consulta_masiva_async(archivo_excel, lote_id):
     try:
         # Leer Excel
         try:
-            df = pd.read_excel(archivo_excel)
+            df = cargar_excel_como_dataframe(archivo_excel)
         except Exception as e:
             consultas_masivas[lote_id] = {
                 "estado": "error",
@@ -188,7 +371,6 @@ def ejecutar_consulta_masiva_async(archivo_excel, lote_id):
             return
         
         total = len(df)
-        resultados = []
         
         consultas_masivas[lote_id] = {
             "estado": "procesando",
@@ -202,10 +384,32 @@ def ejecutar_consulta_masiva_async(archivo_excel, lote_id):
         # Procesar cada registro
         for idx, row in df.iterrows():
             tipo_doc = str(row['tipo_identificacion']).strip().upper()
-            numero_doc = str(row['numero_identificacion']).strip()
-            
+            numero_doc = normalizar_numero_documento(row['numero_identificacion'])
+
+            if tipo_doc not in TIPOS_DOCUMENTO_VALIDOS:
+                consultas_masivas[lote_id]["fallidos"] += 1
+                consultas_masivas[lote_id]["resultados"].append({
+                    "tipo_doc": tipo_doc,
+                    "numero_doc": str(row['numero_identificacion']).strip(),
+                    "estado": "error",
+                    "mensaje": "Tipo de documento inválido"
+                })
+                consultas_masivas[lote_id]["procesados"] = idx + 1
+                continue
+
+            if not numero_doc:
+                consultas_masivas[lote_id]["fallidos"] += 1
+                consultas_masivas[lote_id]["resultados"].append({
+                    "tipo_doc": tipo_doc,
+                    "numero_doc": str(row['numero_identificacion']).strip(),
+                    "estado": "error",
+                    "mensaje": "Número de documento inválido"
+                })
+                consultas_masivas[lote_id]["procesados"] = idx + 1
+                continue
+
             consultas_masivas[lote_id]["mensaje"] = f"Procesando {idx+1}/{total}: {tipo_doc} {numero_doc}"
-            
+
             # Ejecutar consulta individual
             consulta_id = f"{tipo_doc}_{numero_doc}_{int(time.time())}"
             ejecutar_consulta_async(numero_doc, tipo_doc, consulta_id)
@@ -223,7 +427,10 @@ def ejecutar_consulta_masiva_async(archivo_excel, lote_id):
                 "tipo_doc": tipo_doc,
                 "numero_doc": numero_doc,
                 "estado": estado_final.get("estado"),
-                "datos": estado_final.get("datos") if estado_final.get("estado") == "completado" else None
+                "datos": estado_final.get("datos") if estado_final.get("estado") == "completado" else None,
+                "links_descarga": estado_final.get("links_descarga"),
+                "nombre_archivo": estado_final.get("nombre_archivo"),
+                "archivos": estado_final.get("archivos")
             }
             
             consultas_masivas[lote_id]["resultados"].append(resultado)
@@ -249,6 +456,7 @@ def ejecutar_consulta_masiva_async(archivo_excel, lote_id):
         consultas_masivas[lote_id]["estado"] = "completado"
         consultas_masivas[lote_id]["mensaje"] = "Lote procesado completamente"
         consultas_masivas[lote_id]["archivo_consolidado"] = consolidado_path
+        consultas_masivas[lote_id]["link_consolidado"] = f"/api/descargar-lote/{lote_id}"
         
     except Exception as e:
         consultas_masivas[lote_id] = {
@@ -267,16 +475,15 @@ def index():
 def consultar():
     """Endpoint para iniciar una consulta individual"""
     data = request.get_json()
-    numero_doc = data.get('numero_doc', '').strip()
+    numero_doc = normalizar_numero_documento(data.get('numero_doc'))
     tipo_doc = data.get('tipo_doc', 'CC').strip().upper()
-    
+
     # Validar
-    if not numero_doc or not numero_doc.replace(' ', '').isdigit():
+    if not numero_doc:
         return jsonify({"error": "El número de documento debe contener solo números"}), 400
     
-    tipos_validos = ['CC', 'TI', 'CE', 'PA', 'RC', 'NU', 'AS', 'MS', 'CD', 'CN', 'SC', 'PE', 'PT']
-    if tipo_doc not in tipos_validos:
-        return jsonify({"error": f"Tipo de documento inválido. Valores permitidos: {tipos_validos}"}), 400
+    if tipo_doc not in TIPOS_DOCUMENTO_VALIDOS:
+        return jsonify({"error": f"Tipo de documento inválido. Valores permitidos: {TIPOS_DOCUMENTO_VALIDOS}"}), 400
     
     # Generar ID único
     consulta_id = f"{tipo_doc}_{numero_doc}_{int(time.time())}"
