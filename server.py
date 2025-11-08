@@ -8,6 +8,9 @@ import os
 import time
 from threading import Thread
 import json
+import zipfile
+import xml.etree.ElementTree as ET
+
 import pandas as pd
 from werkzeug.utils import secure_filename
 
@@ -31,6 +34,142 @@ consultas_en_progreso = {}
 consultas_masivas = {}
 
 TIPOS_DOCUMENTO_VALIDOS = ['CC', 'TI', 'CE', 'PA', 'RC', 'NU', 'AS', 'MS', 'CD', 'CN', 'SC', 'PE', 'PT']
+
+XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+XLSX_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def _columna_a_indice(columna):
+    """Convierte una referencia de columna de Excel (ej. 'AA') a índice basado en cero."""
+    indice = 0
+    for caracter in columna:
+        if not caracter.isalpha():
+            break
+        indice = indice * 26 + (ord(caracter.upper()) - ord('A') + 1)
+    return max(indice - 1, 0)
+
+
+def _texto_shared_string(elemento):
+    """Extrae el texto de un nodo <si> o inlineStr dentro del XML de Excel."""
+    partes = []
+    for nodo in elemento.iter():
+        if nodo.tag.endswith('}t') and nodo.text:
+            partes.append(nodo.text)
+    return ''.join(partes)
+
+
+def leer_excel_xlsx_basico(ruta):
+    """Lee un archivo XLSX sin dependencias externas como openpyxl."""
+    try:
+        with zipfile.ZipFile(ruta) as archivo_zip:
+            nombres = set(archivo_zip.namelist())
+
+            shared_strings = []
+            if 'xl/sharedStrings.xml' in nombres:
+                raiz_shared = ET.fromstring(archivo_zip.read('xl/sharedStrings.xml'))
+                for si in raiz_shared.findall(f'.//{{{XLSX_MAIN_NS}}}si'):
+                    shared_strings.append(_texto_shared_string(si))
+
+            workbook = ET.fromstring(archivo_zip.read('xl/workbook.xml'))
+            hoja = workbook.find(f'.//{{{XLSX_MAIN_NS}}}sheet')
+            if hoja is None:
+                return pd.DataFrame()
+
+            rel_id = hoja.attrib.get(f'{{{XLSX_REL_NS}}}id')
+            destino_hoja = None
+
+            try:
+                rels = ET.fromstring(archivo_zip.read('xl/_rels/workbook.xml.rels'))
+                for rel in rels.findall(f'{{{XLSX_REL_NS}}}Relationship'):
+                    if rel.attrib.get('Id') == rel_id:
+                        destino_hoja = rel.attrib.get('Target')
+                        break
+            except KeyError:
+                pass
+
+            if not destino_hoja:
+                destino_hoja = 'worksheets/sheet1.xml'
+
+            if not destino_hoja.startswith('xl/'):
+                destino_hoja = f'xl/{destino_hoja}'
+
+            hoja_xml = archivo_zip.read(destino_hoja)
+            raiz_hoja = ET.fromstring(hoja_xml)
+
+            datos = []
+            max_columnas = 0
+            for fila in raiz_hoja.findall(f'.//{{{XLSX_MAIN_NS}}}row'):
+                celdas = {}
+                for celda in fila.findall(f'{{{XLSX_MAIN_NS}}}c'):
+                    referencia = celda.attrib.get('r', '')
+                    columna = ''.join(ch for ch in referencia if ch.isalpha())
+                    indice_columna = _columna_a_indice(columna) if columna else 0
+
+                    valor = ''
+                    tipo = celda.attrib.get('t')
+                    if tipo == 's':
+                        indice_shared = celda.find(f'{{{XLSX_MAIN_NS}}}v')
+                        if indice_shared is not None and indice_shared.text:
+                            try:
+                                valor = shared_strings[int(indice_shared.text)]
+                            except (ValueError, IndexError):
+                                valor = ''
+                    elif tipo == 'inlineStr':
+                        inline = celda.find(f'{{{XLSX_MAIN_NS}}}is')
+                        if inline is not None:
+                            valor = _texto_shared_string(inline)
+                    else:
+                        nodo_valor = celda.find(f'{{{XLSX_MAIN_NS}}}v')
+                        if nodo_valor is not None and nodo_valor.text is not None:
+                            valor = nodo_valor.text
+
+                    celdas[indice_columna] = valor
+                    max_columnas = max(max_columnas, indice_columna + 1)
+
+                fila_actual = [''] * max_columnas
+                for indice, valor in celdas.items():
+                    if indice >= len(fila_actual):
+                        fila_actual.extend([''] * (indice + 1 - len(fila_actual)))
+                    fila_actual[indice] = valor
+                datos.append(fila_actual)
+
+            if not datos:
+                return pd.DataFrame()
+
+            encabezados = [col.strip() for col in datos[0]]
+            registros = []
+            for fila in datos[1:]:
+                registro = {}
+                for indice, encabezado in enumerate(encabezados):
+                    if not encabezado:
+                        continue
+                    valor = fila[indice] if indice < len(fila) else ''
+                    registro[encabezado] = valor
+                if registro:
+                    registros.append(registro)
+
+            df = pd.DataFrame(registros)
+            if not df.empty:
+                df = df.replace(r'^\s*$', pd.NA, regex=True)
+            return df
+
+    except (KeyError, zipfile.BadZipFile, ET.ParseError):
+        pass
+
+    return pd.DataFrame()
+
+
+def cargar_excel_como_dataframe(ruta):
+    """Intenta cargar un archivo Excel utilizando pandas y un lector básico como respaldo."""
+    try:
+        return pd.read_excel(ruta)
+    except Exception as error:
+        mensaje = str(error).lower()
+        if ruta.lower().endswith('.xlsx') and 'openpyxl' in mensaje:
+            df = leer_excel_xlsx_basico(ruta)
+            if not df.empty:
+                return df
+        raise
 
 
 def normalizar_numero_documento(valor):
@@ -197,7 +336,7 @@ def ejecutar_consulta_masiva_async(archivo_excel, lote_id):
     try:
         # Leer Excel
         try:
-            df = pd.read_excel(archivo_excel)
+            df = cargar_excel_como_dataframe(archivo_excel)
         except Exception as e:
             consultas_masivas[lote_id] = {
                 "estado": "error",
