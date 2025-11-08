@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Consulta ADRES</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --bg: #0f172a;
+            --card-bg: rgba(15, 23, 42, 0.85);
+            --card-border: rgba(148, 163, 184, 0.25);
+            --accent: #38bdf8;
+            --accent-dark: #0284c7;
+            --text: #e2e8f0;
+            --muted: #94a3b8;
+            font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: radial-gradient(circle at 20% 20%, rgba(56, 189, 248, 0.12), transparent 40%),
+                radial-gradient(circle at 80% 0%, rgba(14, 165, 233, 0.18), transparent 45%),
+                linear-gradient(135deg, #020617, #0f172a 65%);
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 32px 16px;
+        }
+
+        .app-wrapper {
+            width: min(1100px, 100%);
+            display: grid;
+            gap: 24px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+        }
+
+        .title-block h1 {
+            margin: 0;
+            font-size: clamp(1.8rem, 2.5vw, 2.4rem);
+            letter-spacing: 0.03em;
+        }
+
+        .title-block p {
+            margin: 6px 0 0;
+            color: var(--muted);
+            max-width: 560px;
+        }
+
+        .tabs {
+            display: inline-flex;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--card-border);
+            border-radius: 999px;
+            padding: 4px;
+        }
+
+        .tab-button {
+            border: none;
+            background: transparent;
+            color: var(--muted);
+            font-weight: 600;
+            padding: 10px 20px;
+            border-radius: 999px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .tab-button.active {
+            background: linear-gradient(135deg, rgba(56, 189, 248, 0.3), rgba(14, 165, 233, 0.6));
+            color: white;
+            box-shadow: 0 6px 16px rgba(56, 189, 248, 0.25);
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: clamp(20px, 3vw, 28px);
+            box-shadow: 0 18px 45px rgba(15, 23, 42, 0.45);
+            backdrop-filter: blur(18px);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .card h2 {
+            margin-top: 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.1rem;
+            letter-spacing: 0.02em;
+        }
+
+        form {
+            display: grid;
+            gap: 18px;
+        }
+
+        label {
+            font-weight: 600;
+            color: var(--muted);
+        }
+
+        select,
+        input[type="text"],
+        input[type="number"] {
+            border-radius: 12px;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            background: rgba(15, 23, 42, 0.5);
+            color: var(--text);
+            padding: 12px 14px;
+            font-size: 1rem;
+            transition: border 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        select:focus,
+        input:focus {
+            outline: none;
+            border-color: rgba(56, 189, 248, 0.8);
+            box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.25);
+        }
+
+        button.primary {
+            border: none;
+            border-radius: 12px;
+            padding: 14px 18px;
+            font-weight: 700;
+            font-size: 1rem;
+            color: white;
+            background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+            cursor: pointer;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        button.primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        button.primary:not(:disabled):hover {
+            transform: translateY(-1px);
+            box-shadow: 0 12px 25px rgba(14, 165, 233, 0.35);
+        }
+
+        .status-panel {
+            margin-top: 12px;
+            padding: 16px;
+            border-radius: 14px;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(56, 189, 248, 0.2);
+            display: grid;
+            gap: 12px;
+        }
+
+        .status-panel.hidden {
+            display: none;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 12px;
+            border-radius: 999px;
+            background: rgba(148, 163, 184, 0.25);
+            overflow: hidden;
+        }
+
+        .progress-bar span {
+            display: block;
+            height: 100%;
+            width: 0%;
+            border-radius: inherit;
+            background: linear-gradient(135deg, rgba(56, 189, 248, 0.8), rgba(14, 165, 233, 1));
+            transition: width 0.3s ease;
+        }
+
+        .status-message {
+            font-size: 0.95rem;
+            color: var(--muted);
+        }
+
+        .result-card {
+            margin-top: 18px;
+            border-radius: 16px;
+            background: rgba(15, 23, 42, 0.65);
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            padding: 18px;
+            display: grid;
+            gap: 12px;
+        }
+
+        .result-card h3 {
+            margin: 0;
+            font-size: 1.05rem;
+        }
+
+        .result-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+        }
+
+        .result-item {
+            background: rgba(148, 163, 184, 0.08);
+            border-radius: 12px;
+            padding: 12px;
+        }
+
+        .result-item span {
+            display: block;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            margin-bottom: 4px;
+        }
+
+        .downloads {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: rgba(56, 189, 248, 0.15);
+            color: #e0f2fe;
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-decoration: none;
+        }
+
+        .badge:hover {
+            background: rgba(56, 189, 248, 0.28);
+        }
+
+        .drop-zone {
+            border: 2px dashed rgba(56, 189, 248, 0.35);
+            border-radius: 16px;
+            padding: 32px;
+            text-align: center;
+            color: var(--muted);
+            background: rgba(15, 23, 42, 0.5);
+            transition: border 0.2s ease, background 0.2s ease;
+            cursor: pointer;
+        }
+
+        .drop-zone.dragover {
+            border-color: rgba(56, 189, 248, 0.9);
+            background: rgba(56, 189, 248, 0.15);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 14px;
+        }
+
+        .stat-card {
+            padding: 16px;
+            border-radius: 16px;
+            background: rgba(148, 163, 184, 0.1);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+        }
+
+        .stat-card h4 {
+            margin: 0;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+        }
+
+        .stat-card strong {
+            display: block;
+            margin-top: 6px;
+            font-size: 1.3rem;
+        }
+
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+        }
+
+        .results-table th,
+        .results-table td {
+            border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+            padding: 10px;
+            text-align: left;
+            font-size: 0.92rem;
+        }
+
+        .results-table th {
+            color: var(--muted);
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 0.78rem;
+            background: rgba(56, 189, 248, 0.18);
+            color: #bae6fd;
+            text-decoration: none;
+        }
+
+        .chip.error {
+            background: rgba(248, 113, 113, 0.2);
+            color: #fecaca;
+        }
+
+        .template-link {
+            color: #38bdf8;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        @media (max-width: 768px) {
+            header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-wrapper">
+        <header>
+            <div class="title-block">
+                <h1>Consulta inteligente ADRES</h1>
+                <p>Realiza búsquedas individuales o procesa lotes completos directamente desde Excel. Selecciona el tipo de documento, ingresa el número y deja que el sistema se encargue del resto.</p>
+            </div>
+            <div class="tabs" role="tablist">
+                <button class="tab-button active" data-tab="individual" role="tab">Búsqueda Individual</button>
+                <button class="tab-button" data-tab="masiva" role="tab">Búsqueda Masiva</button>
+            </div>
+        </header>
+
+        <section class="card tab-content active" id="tab-individual" role="tabpanel">
+            <h2>🔍 Consulta individual</h2>
+            <form id="individual-form">
+                <div>
+                    <label for="tipo-doc">Tipo de documento</label>
+                    <select id="tipo-doc" name="tipo_doc" required>
+                        <option value="CC">Cédula de ciudadanía (CC)</option>
+                        <option value="TI">Tarjeta de identidad (TI)</option>
+                        <option value="CE">Cédula de extranjería (CE)</option>
+                        <option value="PA">Pasaporte (PA)</option>
+                        <option value="RC">Registro civil (RC)</option>
+                        <option value="NU">Número único de identificación (NU)</option>
+                        <option value="AS">Adulto sin identificación (AS)</option>
+                        <option value="MS">Menor sin identificación (MS)</option>
+                        <option value="CD">Carné diplomático (CD)</option>
+                        <option value="CN">Certificado de nacido vivo (CN)</option>
+                        <option value="SC">Salvoconducto (SC)</option>
+                        <option value="PE">Permiso especial (PE)</option>
+                        <option value="PT">Permiso temporal de protección (PT)</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="numero-doc">Número de identificación</label>
+                    <input id="numero-doc" name="numero_doc" type="text" inputmode="numeric" pattern="\\d{3,}" placeholder="Ej. 1006881471" required />
+                </div>
+                <button class="primary" type="submit" id="consulta-btn">Consultar ahora</button>
+            </form>
+
+            <div class="status-panel hidden" id="individual-status">
+                <div class="status-message" id="individual-status-message">Esperando...</div>
+                <div class="progress-bar" aria-hidden="true"><span id="individual-progress"></span></div>
+            </div>
+
+            <div id="individual-result"></div>
+        </section>
+
+        <section class="card tab-content" id="tab-masiva" role="tabpanel">
+            <h2>📁 Búsqueda masiva desde Excel</h2>
+            <div class="drop-zone" id="drop-zone">
+                <p><strong>Arrastra tu archivo Excel aquí</strong> o haz clic para seleccionarlo.</p>
+                <p>Formato esperado: columnas <code>tipo_identificacion</code> y <code>numero_identificacion</code>.</p>
+                <p><a href="#" id="download-template" class="template-link">Descargar plantilla CSV</a></p>
+                <input id="file-input" type="file" accept=".xlsx,.xls" hidden />
+            </div>
+
+            <div class="status-panel hidden" id="lote-status">
+                <div class="status-message" id="lote-status-message">Esperando archivo...</div>
+                <div class="progress-bar" aria-hidden="true"><span id="lote-progress"></span></div>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h4>Total registros</h4>
+                        <strong id="stat-total">0</strong>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Procesados</h4>
+                        <strong id="stat-procesados">0</strong>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Exitosos</h4>
+                        <strong id="stat-exitosos">0</strong>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Fallidos</h4>
+                        <strong id="stat-fallidos">0</strong>
+                    </div>
+                </div>
+            </div>
+
+            <div id="lote-resultados"></div>
+        </section>
+    </div>
+
+    <script>
+        const tabs = document.querySelectorAll('.tab-button');
+        const tabPanels = {
+            individual: document.getElementById('tab-individual'),
+            masiva: document.getElementById('tab-masiva')
+        };
+
+        tabs.forEach((tab) => {
+            tab.addEventListener('click', () => {
+                tabs.forEach((btn) => btn.classList.remove('active'));
+                tab.classList.add('active');
+
+                Object.values(tabPanels).forEach((panel) => panel.classList.remove('active'));
+                const target = tab.dataset.tab;
+                tabPanels[target].classList.add('active');
+            });
+        });
+
+        function setStatus(panel, message, progress) {
+            const statusPanel = document.getElementById(panel + '-status');
+            const statusMsg = document.getElementById(panel + '-status-message');
+            const progressBar = document.getElementById(panel + '-progress');
+            if (!statusPanel || !statusMsg || !progressBar) return;
+
+            statusPanel.classList.remove('hidden');
+            statusMsg.textContent = message;
+            if (typeof progress === 'number') {
+                const clamped = Math.max(0, Math.min(100, progress));
+                progressBar.style.width = clamped + '%';
+            }
+        }
+
+        function hideStatus(panel) {
+            const statusPanel = document.getElementById(panel + '-status');
+            if (statusPanel) statusPanel.classList.add('hidden');
+        }
+
+        function renderResultadoIndividual(estado) {
+            const container = document.getElementById('individual-result');
+            container.innerHTML = '';
+
+            if (!estado || estado.estado !== 'completado') {
+                const errorCard = document.createElement('div');
+                errorCard.className = 'result-card';
+                errorCard.innerHTML = `<h3>❌ No se pudo obtener la información</h3><p>${estado?.mensaje || 'Intenta nuevamente.'}</p>`;
+                container.appendChild(errorCard);
+                return;
+            }
+
+            const datos = estado.datos || {};
+            const infoBasica = datos.informacion_basica || {};
+            const afiliaciones = datos.datos_afiliacion || [];
+            const card = document.createElement('div');
+            card.className = 'result-card';
+
+            card.innerHTML = `
+                <h3>✅ Resultado disponible</h3>
+                <div class="result-grid">
+                    <div class="result-item"><span>Tipo</span>${infoBasica.tipo_identificacion || 'N/A'}</div>
+                    <div class="result-item"><span>Número</span>${infoBasica.numero_identificacion || 'N/A'}</div>
+                    <div class="result-item"><span>Nombres</span>${infoBasica.nombres || 'N/A'}</div>
+                    <div class="result-item"><span>Apellidos</span>${infoBasica.apellidos || 'N/A'}</div>
+                    <div class="result-item"><span>Fecha Nacimiento</span>${infoBasica.fecha_nacimiento || 'N/A'}</div>
+                    <div class="result-item"><span>Municipio</span>${infoBasica.municipio || 'N/A'}</div>
+                </div>
+            `;
+
+            if (afiliaciones.length) {
+                const afiliacionList = document.createElement('div');
+                afiliacionList.innerHTML = '<h4>Afiliaciones registradas</h4>';
+                afiliaciones.forEach((afi) => {
+                    const item = document.createElement('div');
+                    item.className = 'result-item';
+                    item.innerHTML = `
+                        <span>${afi.estado || 'Estado'}</span>
+                        <div><strong>${afi.entidad || 'Entidad'}</strong></div>
+                        <div>Régimen: ${afi.regimen || 'N/A'}</div>
+                        <div>Afiliado: ${afi.tipo_afiliado || 'N/A'}</div>
+                        <div>Desde ${afi.fecha_afiliacion || 'N/A'} hasta ${afi.fecha_finalizacion || 'N/A'}</div>
+                    `;
+                    afiliacionList.appendChild(item);
+                });
+                card.appendChild(afiliacionList);
+            }
+
+            if (estado.links_descarga) {
+                const downloads = document.createElement('div');
+                downloads.className = 'downloads';
+                downloads.innerHTML = '<h4>Descargas</h4>';
+                Object.entries(estado.links_descarga).forEach(([tipo, url]) => {
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.className = 'badge';
+                    link.textContent = tipo.toUpperCase();
+                    link.setAttribute('download', '');
+                    downloads.appendChild(link);
+                });
+                card.appendChild(downloads);
+            }
+
+            container.appendChild(card);
+        }
+
+        async function pollConsulta(consultaId) {
+            return new Promise((resolve) => {
+                const interval = setInterval(async () => {
+                    try {
+                        const resp = await fetch(`/api/estado/${consultaId}`);
+                        if (!resp.ok) {
+                            throw new Error('No se pudo obtener el estado de la consulta');
+                        }
+                        const estado = await resp.json();
+                        const progreso = typeof estado.progreso === 'number' ? estado.progreso : 0;
+                        setStatus('individual', estado.mensaje || 'Procesando...', progreso);
+
+                        if (estado.estado === 'completado' || estado.estado === 'error') {
+                            clearInterval(interval);
+                            resolve(estado);
+                        }
+                    } catch (error) {
+                        clearInterval(interval);
+                        resolve({ estado: 'error', mensaje: error.message });
+                    }
+                }, 1500);
+            });
+        }
+
+        document.getElementById('individual-form').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const button = document.getElementById('consulta-btn');
+            button.disabled = true;
+            setStatus('individual', 'Enviando consulta...', 10);
+
+            const payload = {
+                tipo_doc: document.getElementById('tipo-doc').value,
+                numero_doc: document.getElementById('numero-doc').value.trim()
+            };
+
+            try {
+                const response = await fetch('/api/consultar', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || 'No se pudo iniciar la consulta');
+                }
+
+                setStatus('individual', 'Consulta iniciada. Esperando resultados...', 25);
+                const estadoFinal = await pollConsulta(data.consulta_id);
+                renderResultadoIndividual(estadoFinal);
+            } catch (error) {
+                renderResultadoIndividual({ estado: 'error', mensaje: error.message });
+            } finally {
+                button.disabled = false;
+            }
+        });
+
+        function actualizarStatsLote(estado) {
+            document.getElementById('stat-total').textContent = estado.total ?? 0;
+            document.getElementById('stat-procesados').textContent = estado.procesados ?? 0;
+            document.getElementById('stat-exitosos').textContent = estado.exitosos ?? 0;
+            document.getElementById('stat-fallidos').textContent = estado.fallidos ?? 0;
+        }
+
+        function renderResultadosLote(estado) {
+            const container = document.getElementById('lote-resultados');
+            container.innerHTML = '';
+
+            if (!estado) return;
+
+            if (estado.estado === 'error') {
+                const error = document.createElement('div');
+                error.className = 'result-card';
+                error.innerHTML = `<h3>❌ Error procesando lote</h3><p>${estado.mensaje || 'Revisa el archivo e inténtalo de nuevo.'}</p>`;
+                container.appendChild(error);
+                return;
+            }
+
+            const resumen = document.createElement('div');
+            resumen.className = 'result-card';
+            resumen.innerHTML = `<h3>📦 Resultados del lote</h3><p>${estado.mensaje || ''}</p>`;
+
+            if (estado.link_consolidado) {
+                const link = document.createElement('a');
+                link.href = estado.link_consolidado;
+                link.className = 'badge';
+                link.textContent = 'Descargar consolidado JSON';
+                link.setAttribute('download', '');
+                resumen.appendChild(link);
+            }
+
+            if (Array.isArray(estado.resultados) && estado.resultados.length) {
+                const table = document.createElement('table');
+                table.className = 'results-table';
+                table.innerHTML = `
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Tipo</th>
+                            <th>Número</th>
+                            <th>Estado</th>
+                            <th>Descargas</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                `;
+
+                const tbody = table.querySelector('tbody');
+                estado.resultados.forEach((resultado, idx) => {
+                    const row = document.createElement('tr');
+                    const estadoTexto = resultado.estado === 'completado' ? 'Exitoso' : (resultado.estado || 'Error');
+                    const estadoChip = document.createElement('span');
+                    estadoChip.className = 'chip' + (resultado.estado === 'completado' ? '' : ' error');
+                    estadoChip.textContent = estadoTexto;
+
+                    const downloadsCell = document.createElement('td');
+                    downloadsCell.style.whiteSpace = 'nowrap';
+
+                    if (resultado.links_descarga) {
+                        Object.entries(resultado.links_descarga).forEach(([tipo, url]) => {
+                            const link = document.createElement('a');
+                            link.href = url;
+                            link.className = 'chip';
+                            link.textContent = tipo.toUpperCase();
+                            link.style.marginRight = '6px';
+                            link.setAttribute('download', '');
+                            downloadsCell.appendChild(link);
+                        });
+                    } else {
+                        downloadsCell.textContent = '—';
+                    }
+
+                    row.innerHTML = `
+                        <td>${idx + 1}</td>
+                        <td>${resultado.tipo_doc || ''}</td>
+                        <td>${resultado.numero_doc || ''}</td>
+                        <td></td>
+                    `;
+                    row.children[3].appendChild(estadoChip);
+                    row.appendChild(downloadsCell);
+                    tbody.appendChild(row);
+                });
+
+                resumen.appendChild(table);
+            }
+
+            container.appendChild(resumen);
+        }
+
+        async function pollLote(loteId) {
+            return new Promise((resolve) => {
+                const interval = setInterval(async () => {
+                    try {
+                        const resp = await fetch(`/api/estado-lote/${loteId}`);
+                        if (!resp.ok) throw new Error('No se pudo obtener el estado del lote');
+                        const estado = await resp.json();
+                        actualizarStatsLote(estado);
+                        const porcentaje = estado.total ? Math.round((estado.procesados / estado.total) * 100) : 0;
+                        setStatus('lote', estado.mensaje || 'Procesando registros...', porcentaje);
+
+                        if (estado.estado === 'completado' || estado.estado === 'error') {
+                            clearInterval(interval);
+                            resolve(estado);
+                        }
+                    } catch (error) {
+                        clearInterval(interval);
+                        resolve({ estado: 'error', mensaje: error.message });
+                    }
+                }, 1800);
+            });
+        }
+
+        async function procesarArchivoLote(file) {
+            const formData = new FormData();
+            formData.append('archivo', file);
+            setStatus('lote', 'Subiendo archivo...', 5);
+
+            try {
+                const resp = await fetch('/api/consultar-lote', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.error || 'No se pudo iniciar el procesamiento del lote');
+
+                actualizarStatsLote({ total: 0, procesados: 0, exitosos: 0, fallidos: 0 });
+                const estadoFinal = await pollLote(data.lote_id);
+                renderResultadosLote(estadoFinal);
+            } catch (error) {
+                renderResultadosLote({ estado: 'error', mensaje: error.message });
+            }
+        }
+
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+
+        ['dragenter', 'dragover'].forEach((eventName) => {
+            dropZone.addEventListener(eventName, (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                dropZone.classList.add('dragover');
+            });
+        });
+
+        ['dragleave', 'drop'].forEach((eventName) => {
+            dropZone.addEventListener(eventName, (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                dropZone.classList.remove('dragover');
+            });
+        });
+
+        dropZone.addEventListener('drop', (event) => {
+            const file = event.dataTransfer.files[0];
+            if (file) {
+                document.getElementById('lote-status').classList.remove('hidden');
+                procesarArchivoLote(file);
+            }
+        });
+
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        fileInput.addEventListener('change', () => {
+            const file = fileInput.files[0];
+            if (file) {
+                document.getElementById('lote-status').classList.remove('hidden');
+                procesarArchivoLote(file);
+                fileInput.value = '';
+            }
+        });
+
+        document.getElementById('download-template').addEventListener('click', (event) => {
+            event.preventDefault();
+            const csv = 'tipo_identificacion,numero_identificacion\nCC,1006881471\nTI,12345678\n';
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'plantilla_adres.csv';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        });
+    </script>
+</body>
+</html>

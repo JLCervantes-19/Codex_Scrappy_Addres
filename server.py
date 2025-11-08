@@ -30,6 +30,43 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 consultas_en_progreso = {}
 consultas_masivas = {}
 
+TIPOS_DOCUMENTO_VALIDOS = ['CC', 'TI', 'CE', 'PA', 'RC', 'NU', 'AS', 'MS', 'CD', 'CN', 'SC', 'PE', 'PT']
+
+
+def normalizar_numero_documento(valor):
+    """Convierte el número de documento a una cadena solo con dígitos."""
+    if valor is None:
+        return ""
+
+    import numbers
+
+    if isinstance(valor, numbers.Number):
+        try:
+            return str(int(valor))
+        except (ValueError, OverflowError):
+            pass
+
+    texto = str(valor).strip()
+    if not texto:
+        return ""
+
+    if texto.isdigit():
+        return texto
+
+    texto_normalizado = texto.replace(" ", "").replace(",", "")
+    if texto_normalizado.isdigit():
+        return texto_normalizado
+
+    try:
+        numero = float(texto_normalizado)
+        if numero.is_integer():
+            return str(int(numero))
+    except ValueError:
+        pass
+
+    solo_digitos = "".join(ch for ch in texto if ch.isdigit())
+    return solo_digitos
+
 
 def ejecutar_consulta_async(numero_doc, tipo_doc, consulta_id):
     """Ejecuta la consulta en background"""
@@ -120,12 +157,19 @@ def ejecutar_consulta_async(numero_doc, tipo_doc, consulta_id):
         archivos, datos_json = guardar_resultados(nombre_archivo, contenido_resultado, driver)
         
         # Actualizar estado final
+        enlaces_descarga = {
+            clave: f"/api/descargar/{nombre_archivo}/{clave}"
+            for clave in archivos.keys()
+        }
+
         consultas_en_progreso[consulta_id] = {
             "estado": "completado",
             "progreso": 100,
             "mensaje": "Consulta completada exitosamente",
             "datos": datos_json,
             "archivos": {k: os.path.basename(v) for k, v in archivos.items()},
+            "links_descarga": enlaces_descarga,
+            "nombre_archivo": nombre_archivo,
             "tipo_doc": tipo_doc,
             "numero_doc": numero_doc
         }
@@ -188,7 +232,6 @@ def ejecutar_consulta_masiva_async(archivo_excel, lote_id):
             return
         
         total = len(df)
-        resultados = []
         
         consultas_masivas[lote_id] = {
             "estado": "procesando",
@@ -202,10 +245,32 @@ def ejecutar_consulta_masiva_async(archivo_excel, lote_id):
         # Procesar cada registro
         for idx, row in df.iterrows():
             tipo_doc = str(row['tipo_identificacion']).strip().upper()
-            numero_doc = str(row['numero_identificacion']).strip()
-            
+            numero_doc = normalizar_numero_documento(row['numero_identificacion'])
+
+            if tipo_doc not in TIPOS_DOCUMENTO_VALIDOS:
+                consultas_masivas[lote_id]["fallidos"] += 1
+                consultas_masivas[lote_id]["resultados"].append({
+                    "tipo_doc": tipo_doc,
+                    "numero_doc": str(row['numero_identificacion']).strip(),
+                    "estado": "error",
+                    "mensaje": "Tipo de documento inválido"
+                })
+                consultas_masivas[lote_id]["procesados"] = idx + 1
+                continue
+
+            if not numero_doc:
+                consultas_masivas[lote_id]["fallidos"] += 1
+                consultas_masivas[lote_id]["resultados"].append({
+                    "tipo_doc": tipo_doc,
+                    "numero_doc": str(row['numero_identificacion']).strip(),
+                    "estado": "error",
+                    "mensaje": "Número de documento inválido"
+                })
+                consultas_masivas[lote_id]["procesados"] = idx + 1
+                continue
+
             consultas_masivas[lote_id]["mensaje"] = f"Procesando {idx+1}/{total}: {tipo_doc} {numero_doc}"
-            
+
             # Ejecutar consulta individual
             consulta_id = f"{tipo_doc}_{numero_doc}_{int(time.time())}"
             ejecutar_consulta_async(numero_doc, tipo_doc, consulta_id)
@@ -223,7 +288,10 @@ def ejecutar_consulta_masiva_async(archivo_excel, lote_id):
                 "tipo_doc": tipo_doc,
                 "numero_doc": numero_doc,
                 "estado": estado_final.get("estado"),
-                "datos": estado_final.get("datos") if estado_final.get("estado") == "completado" else None
+                "datos": estado_final.get("datos") if estado_final.get("estado") == "completado" else None,
+                "links_descarga": estado_final.get("links_descarga"),
+                "nombre_archivo": estado_final.get("nombre_archivo"),
+                "archivos": estado_final.get("archivos")
             }
             
             consultas_masivas[lote_id]["resultados"].append(resultado)
@@ -249,6 +317,7 @@ def ejecutar_consulta_masiva_async(archivo_excel, lote_id):
         consultas_masivas[lote_id]["estado"] = "completado"
         consultas_masivas[lote_id]["mensaje"] = "Lote procesado completamente"
         consultas_masivas[lote_id]["archivo_consolidado"] = consolidado_path
+        consultas_masivas[lote_id]["link_consolidado"] = f"/api/descargar-lote/{lote_id}"
         
     except Exception as e:
         consultas_masivas[lote_id] = {
@@ -267,16 +336,15 @@ def index():
 def consultar():
     """Endpoint para iniciar una consulta individual"""
     data = request.get_json()
-    numero_doc = data.get('numero_doc', '').strip()
+    numero_doc = normalizar_numero_documento(data.get('numero_doc'))
     tipo_doc = data.get('tipo_doc', 'CC').strip().upper()
-    
+
     # Validar
-    if not numero_doc or not numero_doc.replace(' ', '').isdigit():
+    if not numero_doc:
         return jsonify({"error": "El número de documento debe contener solo números"}), 400
     
-    tipos_validos = ['CC', 'TI', 'CE', 'PA', 'RC', 'NU', 'AS', 'MS', 'CD', 'CN', 'SC', 'PE', 'PT']
-    if tipo_doc not in tipos_validos:
-        return jsonify({"error": f"Tipo de documento inválido. Valores permitidos: {tipos_validos}"}), 400
+    if tipo_doc not in TIPOS_DOCUMENTO_VALIDOS:
+        return jsonify({"error": f"Tipo de documento inválido. Valores permitidos: {TIPOS_DOCUMENTO_VALIDOS}"}), 400
     
     # Generar ID único
     consulta_id = f"{tipo_doc}_{numero_doc}_{int(time.time())}"

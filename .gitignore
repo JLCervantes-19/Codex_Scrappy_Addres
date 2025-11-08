@@ -42,6 +42,7 @@ uploads/
 # Except
 !requirements.txt
 !README.md
+!index.html
 !.gitkeep
 
 # IDE

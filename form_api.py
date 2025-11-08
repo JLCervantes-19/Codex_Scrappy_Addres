@@ -4,17 +4,128 @@
 
 import time
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 from selenium.common.exceptions import (
     StaleElementReferenceException,
     ElementNotInteractableException,
     ElementClickInterceptedException,
+    NoSuchFrameException,
 )
 from selenium.webdriver import ActionChains
 from config import DEBUG_DIR
 from browser_api import guardar_debug
+
+
+def _buscar_elemento_en_contexto(
+    driver,
+    locators,
+    timeout,
+    max_profundidad=6,
+    _profundidad=0,
+    _visitados=None,
+):
+    """Busca un elemento manejando iframes y tiempos de carga variables."""
+
+    if _visitados is None:
+        _visitados = set()
+
+    if _profundidad == 0:
+        limite = time.time() + timeout
+        ultimo_error = None
+        while time.time() < limite:
+            driver.switch_to.default_content()
+            try:
+                elemento = _buscar_elemento_en_contexto(
+                    driver,
+                    locators,
+                    timeout=0,
+                    max_profundidad=max_profundidad,
+                    _profundidad=1,
+                    _visitados=set(),
+                )
+                if elemento:
+                    try:
+                        if elemento.is_displayed() and elemento.is_enabled():
+                            return elemento
+                    except StaleElementReferenceException as exc:
+                        ultimo_error = exc
+                else:
+                    ultimo_error = None
+            except Exception as exc:  # pylint: disable=broad-except
+                ultimo_error = exc
+            time.sleep(0.5)
+
+        if ultimo_error:
+            raise ultimo_error
+        return None
+
+    # En niveles recursivos no necesitamos bucle de tiempo porque el nivel 0 ya lo maneja
+    for locator in locators:
+        try:
+            elementos = driver.find_elements(*locator)
+        except Exception:  # pylint: disable=broad-except
+            elementos = []
+
+        for elemento in elementos:
+            try:
+                if elemento.is_displayed() and elemento.is_enabled():
+                    return elemento
+            except StaleElementReferenceException:
+                continue
+
+    if _profundidad >= max_profundidad:
+        return None
+
+    try:
+        iframes = driver.find_elements(By.CSS_SELECTOR, "iframe,frame")
+    except Exception:  # pylint: disable=broad-except
+        iframes = []
+
+    for indice, iframe in enumerate(iframes):
+        try:
+            clave = (
+                _profundidad,
+                iframe.id,
+                iframe.get_attribute("id"),
+                iframe.get_attribute("name"),
+                indice,
+            )
+        except StaleElementReferenceException:
+            continue
+
+        if clave in _visitados:
+            continue
+        _visitados.add(clave)
+
+        try:
+            driver.switch_to.frame(iframe)
+        except (NoSuchFrameException, StaleElementReferenceException, ElementClickInterceptedException):
+            continue
+        except Exception:
+            # Algunos iframes externos (como reCAPTCHA) pueden bloquear el acceso
+            try:
+                driver.switch_to.default_content()
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
+
+        encontrado = _buscar_elemento_en_contexto(
+            driver,
+            locators,
+            timeout=0,
+            max_profundidad=max_profundidad,
+            _profundidad=_profundidad + 1,
+            _visitados=_visitados,
+        )
+        if encontrado:
+            return encontrado
+
+        try:
+            driver.switch_to.parent_frame()
+        except Exception:  # pylint: disable=broad-except
+            driver.switch_to.default_content()
+
+    return None
 
 
 def verificar_iframe_con_elemento(driver, element_id="txtNumDoc"):
@@ -28,18 +139,22 @@ def verificar_iframe_con_elemento(driver, element_id="txtNumDoc"):
     Returns:
         bool: True si el elemento está en un iframe y se cambió a él
     """
-    iframes = driver.find_elements(By.TAG_NAME, "iframe")
-    for iframe in iframes:
-        driver.switch_to.frame(iframe)
-        try:
-            if driver.find_element(By.ID, element_id):
-                return True
-        except:
-            driver.switch_to.default_content()
+    driver.switch_to.default_content()
+
+    element = _buscar_elemento_en_contexto(
+        driver,
+        [(By.ID, element_id)],
+        timeout=5,
+    )
+
+    if element:
+        return True
+
+    driver.switch_to.default_content()
     return False
 
 
-def encontrar_elemento_con_localizadores(driver, locators, timeout=30):
+def encontrar_elemento_con_localizadores(driver, locators, timeout=30, buscar_en_iframes=True):
     """
     Intenta encontrar un elemento usando múltiples localizadores
     
@@ -51,15 +166,19 @@ def encontrar_elemento_con_localizadores(driver, locators, timeout=30):
     Returns:
         WebElement or None: Elemento encontrado o None
     """
-    wait = WebDriverWait(driver, timeout)
-    
-    for locator in locators:
-        try:
-            el = wait.until(EC.presence_of_element_located(locator))
-            el = wait.until(EC.visibility_of_element_located(locator))
-            return el
-        except Exception:
-            continue
+    driver.switch_to.default_content()
+
+    elemento = _buscar_elemento_en_contexto(
+        driver,
+        locators,
+        timeout=timeout,
+        max_profundidad=6 if buscar_en_iframes else 1,
+    )
+
+    if elemento:
+        return elemento
+
+    driver.switch_to.default_content()
     return None
 
 
@@ -94,7 +213,12 @@ def seleccionar_tipo_documento(driver, tipo_documento="CC"):
             (By.XPATH, "//select[contains(@class, 'txtBox')]")
         ]
         
-        dropdown_element = encontrar_elemento_con_localizadores(driver, locators, timeout=10)
+        dropdown_element = encontrar_elemento_con_localizadores(
+            driver,
+            locators,
+            timeout=10,
+            buscar_en_iframes=True,
+        )
         
         if not dropdown_element:
             raise RuntimeError("No se encontró el dropdown de tipo de documento")
@@ -198,6 +322,13 @@ def escribir_en_campo(driver, cedula, timeout=30, debug_folder=DEBUG_DIR):
     import os
     os.makedirs(debug_folder, exist_ok=True)
 
+    # Normalizar cédula (eliminar espacios y caracteres no numéricos comunes)
+    cedula = str(cedula).strip()
+    if not cedula.isdigit():
+        cedula_filtrada = "".join(ch for ch in cedula if ch.isdigit())
+        if cedula_filtrada:
+            cedula = cedula_filtrada
+
     # Verificar si está en iframe
     if not verificar_iframe_con_elemento(driver):
         driver.switch_to.default_content()
@@ -211,7 +342,12 @@ def escribir_en_campo(driver, cedula, timeout=30, debug_folder=DEBUG_DIR):
     ]
 
     # Encontrar el elemento
-    el = encontrar_elemento_con_localizadores(driver, locators, timeout)
+    el = encontrar_elemento_con_localizadores(
+        driver,
+        locators,
+        timeout,
+        buscar_en_iframes=True,
+    )
     
     if not el:
         screenshot, html = guardar_debug(driver, "no_element_present", debug_folder)
@@ -275,5 +411,5 @@ def enviar_formulario(driver, button_id="btnConsultar"):
     ventanas_antes = driver.window_handles.copy()
     btn.click()
     print("[+] Click en Consultar realizado")
-    
+
     return ventanas_antes
