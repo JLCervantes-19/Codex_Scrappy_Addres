@@ -2,7 +2,6 @@ selenium>=4.0.0
 webdriver-manager>=3.8.0
 Pillow>=9.0.0
 requests>=2.28.0
-anti-captcha
 flask
 flask-cors
 pandas
