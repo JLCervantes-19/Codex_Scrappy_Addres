@@ -612,3 +612,10 @@ if __name__ == '__main__':
     print(f"  GET    /api/descargar-lote/<id>  - Descargar consolidado")
     print("=" * 60)
     app.run(debug=True, host='0.0.0.0', port=5000)
+
+
+# Handler para Vercel (añade esto al final de server.py)
+def handler(request):
+    from flask import request as flask_request
+    with app.request_context(flask_request.environ):
+        return app.full_dispatch_request()
